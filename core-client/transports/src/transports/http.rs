@@ -107,8 +107,8 @@ where
 mod tests {
 	use super::*;
 	use crate::*;
+	use ::hyper::rt;
 	use assert_matches::assert_matches;
-	use hyper::rt;
 	use jsonrpc_core::{Error, ErrorCode, IoHandler, Params, Value};
 	use jsonrpc_http_server::*;
 	use std::net::SocketAddr;
@@ -326,11 +326,10 @@ mod tests {
 		let res = rx.recv_timeout(Duration::from_secs(3)).unwrap();
 
 		if let Err(RpcError::Other(err)) = res {
-			if let Some(err) = err.downcast_ref::<hyper::Error>() {
-				assert!(err.is_connect(), format!("Expected Connection Error, got {:?}", err))
-			} else {
-				panic!("Expected a hyper::Error")
-			}
+			assert!(
+				err.to_string().contains("Connection refused"),
+				format!("Expected Connection refused error, got {:?}", err)
+			)
 		} else {
 			panic!("Expected JsonRpcError. Received {:?}", res)
 		}

@@ -3,8 +3,11 @@ use crate::WeakRpc;
 use std::sync::Arc;
 use std::{fmt, mem, str};
 
+use futures03::compat::{Compat01As03, Future01CompatExt};
+use futures03::stream::TryStreamExt;
 use hyper::header::{self, HeaderMap, HeaderValue};
 use hyper::{self, service::Service, Body, Method};
+use std::task::Context;
 
 use crate::jsonrpc::futures::{future, Async, Future, Poll, Stream};
 use crate::jsonrpc::serde_json;
@@ -57,13 +60,16 @@ impl<M: Metadata, S: Middleware<M>> ServerHandler<M, S> {
 	}
 }
 
-impl<M: Metadata, S: Middleware<M>> Service for ServerHandler<M, S> {
-	type ReqBody = Body;
-	type ResBody = Body;
+impl<M: Metadata, S: Middleware<M>> Service<hyper::Request<Body>> for ServerHandler<M, S> {
+	type Response = hyper::Response<Body>;
 	type Error = hyper::Error;
-	type Future = Handler<M, S>;
+	type Future = Compat01As03<Handler<M, S>>;
 
-	fn call(&mut self, request: hyper::Request<Self::ReqBody>) -> Self::Future {
+	fn poll_ready(&mut self, _cx: &mut Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+		std::task::Poll::Ready(Ok(()))
+	}
+
+	fn call(&mut self, request: hyper::Request<Body>) -> Self::Future {
 		let is_host_allowed = utils::is_host_allowed(&request, &self.allowed_hosts);
 		let action = self.middleware.on_request(request);
 
@@ -80,12 +86,12 @@ impl<M: Metadata, S: Middleware<M>> Service for ServerHandler<M, S> {
 
 		// Validate host
 		if should_validate_hosts && !is_host_allowed {
-			return Handler::Err(Some(Response::host_not_allowed()));
+			return Handler::Err(Some(Response::host_not_allowed())).compat();
 		}
 
 		// Replace response with the one returned by middleware.
 		match response {
-			Ok(response) => Handler::Middleware(response),
+			Ok(response) => Handler::Middleware(response).compat(),
 			Err(request) => {
 				Handler::Rpc(RpcHandler {
 					jsonrpc_handler: self.jsonrpc_handler.clone(),
@@ -106,6 +112,7 @@ impl<M: Metadata, S: Middleware<M>> Service for ServerHandler<M, S> {
 					// initial value, overwritten when reading client headers
 					keep_alive: true,
 				})
+				.compat()
 			}
 		}
 	}
@@ -480,11 +487,12 @@ impl<M: Metadata, S: Middleware<M>> RpcHandler<M, S> {
 
 	fn process_body(
 		&self,
-		mut body: hyper::Body,
+		body: hyper::Body,
 		mut request: Vec<u8>,
 		uri: Option<hyper::Uri>,
 		metadata: M,
 	) -> Result<RpcPollState<M, S::Future, S::CallFuture>, BodyError> {
+		let mut body = body.compat();
 		loop {
 			match body.poll()? {
 				Async::Ready(Some(chunk)) => {
@@ -521,7 +529,7 @@ impl<M: Metadata, S: Middleware<M>> RpcHandler<M, S> {
 				}
 				Async::NotReady => {
 					return Ok(RpcPollState::NotReady(RpcHandlerState::ReadingBody {
-						body,
+						body: body.into_inner(),
 						request,
 						metadata,
 						uri,

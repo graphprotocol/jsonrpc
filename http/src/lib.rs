@@ -33,6 +33,7 @@ mod handler;
 mod response;
 #[cfg(test)]
 mod tests;
+mod tokio_compat;
 mod utils;
 
 use std::io;
@@ -55,6 +56,10 @@ pub use crate::server_utils::cors::{self, AccessControlAllowOrigin, AllowCors, O
 pub use crate::server_utils::hosts::{DomainsValidation, Host};
 pub use crate::server_utils::{tokio, SuspendableStream};
 pub use crate::utils::{cors_allow_headers, cors_allow_origin, is_host_allowed};
+
+use crate::tokio_compat::TokioCompat;
+use futures03::compat::AsyncWrite01CompatExt;
+use futures03::future::{FutureExt, TryFutureExt};
 
 /// Action undertaken by a middleware.
 pub enum RequestMiddlewareAction {
@@ -594,9 +599,10 @@ fn serve<M: jsonrpc::Metadata, S: jsonrpc::Middleware<M>>(
 						);
 
 						tokio::spawn(
-							http.serve_connection(socket, service)
+							http.serve_connection(TokioCompat(socket.compat()), service)
 								.map_err(|e| error!("Error serving connection: {:?}", e))
-								.then(|_| Ok(())),
+								.map(|_| Ok(()))
+								.compat(),
 						)
 					})
 					.for_each(|_| Ok(()))
